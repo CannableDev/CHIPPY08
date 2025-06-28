@@ -2,14 +2,25 @@
 #include <malloc.h>
 #include <stdio.h>
 
+Cstack* Cstack_Init()
+{
+    Cstack* cs = malloc(sizeof(Cstack));
+    cs->top = NULL;
+    cs->count = 0;
+    return cs;
+}
+
 void Cstack_Clean(Cstack* stack)
 {
-    while (stack->top)
+    if (!stack->top) return;
+
+    while (stack->top->next)
     {
         Node* prev = stack->top;
         stack->top = stack->top->next;
         free(prev);
     }
+    free(stack->top);
     stack->top = NULL;
     stack->count = 0;
 }

@@ -17,6 +17,7 @@ typedef struct Cstack
 	size_t count;
 } Cstack;
 
+Cstack* Cstack_Init();
 void Cstack_Clean(Cstack* stack);
 void Cstack_Push(Cstack* stack, uint16_t value);
 uint16_t Cstack_Pop(Cstack* stack);

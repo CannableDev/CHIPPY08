@@ -57,7 +57,7 @@ double g_CycleTimer = 0;
 #define CHIPPY_STARTING_PROGRAM_COUNTER 0x200
 
 uint16_t g_ProgramCounter = CHIPPY_STARTING_PROGRAM_COUNTER;
-uint8_t g_VariableRegs[16];
+uint8_t g_VariableRegisters[16];
 uint16_t g_IndexReg = 0;
 Cstack* g_AddressStack = NULL;
 uint8_t* g_RomMemory = NULL;
@@ -124,12 +124,14 @@ uint64_t g_InputBits = 0;
 
 // Program Functions
 #define CLAMP(value, min, max) ((value) < (min) ? (min) : ((value) > (max) ? (max) : (value)))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 void CHIPPY_InitVariableRegister()
 {
     for (int i = 0; i < 16; i++)
     {
-        g_VariableRegs[i] = 0;
+        g_VariableRegisters[i] = 0;
     }
 }
 
@@ -142,10 +144,9 @@ void CHIPPY_ClearDisplayBuffer()
     }
 }
 
-void CHIPPY_SetColorAt(uint32_t* idx, uint8_t r, uint8_t g, uint8_t b)
+void CHIPPY_SetColorAt(uint32_t* idx, SDL_Color* color)
 {
-    *idx = 0;
-    *idx = (uint32_t)r << 24 | (uint32_t)g << 16 | (uint32_t)b << 8;
+    *idx = (uint32_t)color->r << 24 | (uint32_t)color->g << 16 | (uint32_t)color->b << 8 | 0xFF;
 }
 
 int CHIPPY_LoadRom()
@@ -298,12 +299,12 @@ void CHIPPY_OpJumpPC(uint16_t instruction)
 
 void CHIPPY_OpSetVX(uint16_t instruction)
 {
-    g_VariableRegs[X(instruction)] = NN(instruction);
+    g_VariableRegisters[X(instruction)] = NN(instruction);
 };
 
 void CHIPPY_OpVXAdd(uint16_t instruction)
 {
-    g_VariableRegs[X(instruction)] += NN(instruction);
+    g_VariableRegisters[X(instruction)] += NN(instruction);
 };
 
 void CHIPPY_OpSetIdxReg(uint16_t instruction)
@@ -313,13 +314,39 @@ void CHIPPY_OpSetIdxReg(uint16_t instruction)
 
 void CHIPPY_OpSetPixel(uint16_t instruction)
 {
-    // This is totally wrong
-    SDL_Color color = g_DisplayColors[!!N(instruction)];
-    CHIPPY_SetColorAt(g_DisplayBuffer[X(instruction)][Y(instruction)],
-        color.r,
-        color.g,
-        color.b
-        );
+    const uint8_t x = g_VariableRegisters[X(instruction)] % CHIPPY_DISPLAY_WIDTH;
+    const uint8_t y = g_VariableRegisters[Y(instruction)] % CHIPPY_DISPLAY_HEIGHT;
+    uint8_t numPixelsH = N(instruction);
+    
+    /* prevent writing outside of the buffer
+    x = 28, numpixel = 8, height = 32
+    3 in range 5 out of range
+    numpixel = numpixel - (height - 1 % numpixel + y)
+    */
+    numPixelsH = y + numPixelsH > CHIPPY_DISPLAY_HEIGHT - 1 ?
+                CHIPPY_DISPLAY_HEIGHT - y - 1 : numPixelsH;
+    uint8_t numPixelsW = x + 8 > CHIPPY_DISPLAY_WIDTH - 1 ?
+                        CHIPPY_DISPLAY_WIDTH - x - 1 : 8;
+
+    for (uint8_t row = 0; row < numPixelsH; ++row)
+    {
+        for (uint8_t col = 0; col < numPixelsW; ++col)
+        {
+            // get pixel from msb -> lsb
+            const uint8_t spritePixel = !!g_RomMemory[g_IndexReg + row] & (0b10000000 >> col);
+            // get pixel to draw to from color buffer
+            const uint32_t* bufferPixel = g_DisplayBuffer[y + row][x + col];
+            
+            // if 0 = 0x00, if 1 = 0xFF
+            const uint32_t drawMask = -spritePixel;
+            // if sprite and pixel are on, negated 
+            const uint8_t bPixelNegation = (uint8_t)(drawMask & !!*bufferPixel);
+            g_VariableRegisters[15] |= bPixelNegation;
+
+            const SDL_Color* color = &g_DisplayColors[spritePixel ^ !!*bufferPixel];
+            CHIPPY_SetColorAt(bufferPixel, color);
+        }
+    }
 }; 
 
 CHIPPY_FPtr g_OperationMap[16] =
@@ -345,7 +372,15 @@ CHIPPY_FPtr g_OperationMap[16] =
 
 void CHIPPY_Execute(uint16_t op, uint16_t instruction)
 {
-
+    if (op < 16)
+    {
+        (*g_OperationMap[op])(instruction);
+    }
+    else
+    {
+        perror("Op code out of range");
+        return;
+    }
 };
 
 void CHIPPY_Update()
@@ -391,7 +426,7 @@ SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
     CHIPPY_InitVariableRegister();
     CHIPPY_ClearDisplayBuffer();
 
-    g_AddressStack = malloc(sizeof(Cstack));
+    g_AddressStack = Cstack_Init();
 
     g_DisplayTexture = SDL_CreateTexture(g_Renderer, CHIPPY_DISPLAY_FORMAT, CHIPPY_DISPLAY_TEXTURE_FLAGS, CHIPPY_DISPLAY_WIDTH, CHIPPY_DISPLAY_HEIGHT);
     SDL_SetTextureScaleMode(g_DisplayTexture, CHIPPY_DISPLAY_SCALE_MODE);
@@ -481,11 +516,6 @@ SDL_AppResult SDL_AppIterate(void *appstate)
         CHIPPY_Update();
 
         // Draw
-
-        // debug colors
-        for (int i = 0; i < CHIPPY_DISPLAY_WIDTH; i++)
-            g_DisplayBuffer[0][i] = g_CurrentTime * 0xffffffff;
-
         SDL_UpdateTexture(g_DisplayTexture, NULL, &g_DisplayBuffer, sizeof(g_DisplayBuffer[0][0]) * CHIPPY_DISPLAY_WIDTH);
         
         SDL_SetRenderDrawColor(g_Renderer, g_DisplayColors[0].r, g_DisplayColors[0].g, g_DisplayColors[0].b, g_DisplayColors[0].a);
