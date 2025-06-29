@@ -7,19 +7,24 @@ SDL_Renderer *g_Renderer = NULL;
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "cstack.h"
+#include "Chippy.h"
 
-#define CHIPPY_ROM_PATH "roms\\1-ibm-logo.ch8"
+// Tests primarily taken from
+// https://github.com/Timendus/chip8-test-suite?tab=readme-ov-file
+#define CHIPPY_ROM_PATH "roms\\5-quirks.ch8"
+#define CHIPPY_WELCOME_MSG "CHIPPY-08"
 
 // Display 
 #define CHIPPY_DISPLAY_WIDTH 64
 #define CHIPPY_DISPLAY_HEIGHT 32
 
 // Wanted to use 1bit formats for this but SDL3 doesn't support it with textures
-// Could do it with surfaces but it converts to RGBA32 when you make textures from surfaces anyway,
+// Could do it with surfaces but it converts to 32 bit format when you make textures from surfaces anyway,
 // so there's not much point.
-#define CHIPPY_DISPLAY_FORMAT SDL_PIXELFORMAT_RGBA32
+#define CHIPPY_DISPLAY_FORMAT SDL_PIXELFORMAT_ABGR32
 
 #define CHIPPY_DISPLAY_TEXTURE_FLAGS SDL_TEXTUREACCESS_STREAMING
 #define CHIPPY_DISPLAY_SCALE_MODE SDL_SCALEMODE_NEAREST
@@ -29,8 +34,8 @@ uint32_t g_DisplayBuffer[CHIPPY_DISPLAY_HEIGHT][CHIPPY_DISPLAY_WIDTH];
 SDL_Texture* g_DisplayTexture = NULL;
 SDL_Color g_DisplayColors[2] =
 {
-    { 0, 0, 0, 255 }, // off color
-    { 255, 30, 30, 255 } // on color
+    { 10, 24, 41, 255 }, // off color
+    { 93, 232, 165, 255 } // on color
 };
 
 // App Time
@@ -58,13 +63,13 @@ double g_CycleTimer = 0;
 
 uint16_t g_ProgramCounter = CHIPPY_STARTING_PROGRAM_COUNTER;
 uint8_t g_VariableRegisters[16];
-uint16_t g_IndexReg = 0;
+uint16_t g_IndexRegister = 0;
 Cstack* g_AddressStack = NULL;
 uint8_t* g_RomMemory = NULL;
-uint8_t g_RomSize = 0;
+size_t g_RomSize = 0;
 
 // Rom Instructions
-#define CHIPPY_CYCLES_PER_SEC 700 // Instruction Limit
+#define CHIPPY_CYCLES_PER_SEC 700.0 // Instruction Limit
 #define CHIPPY_SEC_PER_CYCLE (1.0 / CHIPPY_CYCLES_PER_SEC)
 
 #define NNN(x) (x & 0x0FFF)
@@ -72,6 +77,8 @@ uint8_t g_RomSize = 0;
 #define N(x) (x & 0x000F)
 #define X(x) ((x & 0x0F00) >> 8)
 #define Y(x) ((x & 0x00F0) >> 4)
+
+#define OP(x) ((x & 0xF000) >> 12)
 
 typedef void (*CHIPPY_FPtr)(uint16_t);
 
@@ -99,27 +106,78 @@ const uint32_t g_FontStartAddress = 0x50;
 const uint32_t g_FontHeight = 5;
 
 // Rom Inputs
-const uint64_t g_InputBitMask = 1ull << SDL_SCANCODE_1 |
-                                       1ull << SDL_SCANCODE_2 |
-                                       1ull << SDL_SCANCODE_3 |
-                                       1ull << SDL_SCANCODE_4 |
-                                       1ull << SDL_SCANCODE_Q |
-                                       1ull << SDL_SCANCODE_W |
-                                       1ull << SDL_SCANCODE_E |
-                                       1ull << SDL_SCANCODE_R |
-                                       1ull << SDL_SCANCODE_A |
-                                       1ull << SDL_SCANCODE_S |
-                                       1ull << SDL_SCANCODE_D |
-                                       1ull << SDL_SCANCODE_F |
-                                       1ull << SDL_SCANCODE_Z |
-                                       1ull << SDL_SCANCODE_X |
-                                       1ull << SDL_SCANCODE_C |
-                                       1ull << SDL_SCANCODE_V;
-uint64_t g_InputBits = 0;
 
-#define GET_INPUT(code) (g_InputBits >> code)
+const uint8_t g_InputHexTable[16] =
+{
+    SDL_SCANCODE_1, // 0x0
+    SDL_SCANCODE_2, // 0x1
+    SDL_SCANCODE_3, // 0x2
+    SDL_SCANCODE_Q, // 0x3
+    SDL_SCANCODE_W, // 0x4
+    SDL_SCANCODE_E, // 0x5
+    SDL_SCANCODE_A, // 0x6
+    SDL_SCANCODE_S, // 0x7
+    SDL_SCANCODE_D, // 0x8
+    SDL_SCANCODE_X, // 0x9
+    SDL_SCANCODE_Z, // 0xA
+    SDL_SCANCODE_C, // 0xB
+    SDL_SCANCODE_4, // 0xC
+    SDL_SCANCODE_R, // 0xD
+    SDL_SCANCODE_F, // 0xE
+    SDL_SCANCODE_V  // 0xF
+};
+/*
+    CHIP8-Hex            PC-Scancode
+    1 2 3 C              1 2 3 4
+    4 5 6 D      ->      Q W E R
+    7 8 9 E              A S D F
+    A 0 B F              Z X C V
+*/
+// Set size large enough to cover all scancodes used, SCANCODE_4 == 33 
+static const uint8_t g_InputScanTable[34] = {
+    [SDL_SCANCODE_1] = 0x0,
+    [SDL_SCANCODE_2] = 0x1,
+    [SDL_SCANCODE_3] = 0x2,
+    [SDL_SCANCODE_Q] = 0x3,
+    [SDL_SCANCODE_W] = 0x4,
+    [SDL_SCANCODE_E] = 0x5,
+    [SDL_SCANCODE_A] = 0x6,
+    [SDL_SCANCODE_S] = 0x7,
+    [SDL_SCANCODE_D] = 0x8,
+    [SDL_SCANCODE_X] = 0x9,
+    [SDL_SCANCODE_Z] = 0xA,
+    [SDL_SCANCODE_C] = 0xB,
+    [SDL_SCANCODE_4] = 0xC,
+    [SDL_SCANCODE_R] = 0xD,
+    [SDL_SCANCODE_F] = 0xE,
+    [SDL_SCANCODE_V] = 0xF
+    // All other values default to 0
+};
+
+const uint64_t g_InputBitMask = 1ull << SDL_SCANCODE_1 |
+                                1ull << SDL_SCANCODE_2 |
+                                1ull << SDL_SCANCODE_3 |
+                                1ull << SDL_SCANCODE_4 |
+                                1ull << SDL_SCANCODE_Q |
+                                1ull << SDL_SCANCODE_W |
+                                1ull << SDL_SCANCODE_E |
+                                1ull << SDL_SCANCODE_R |
+                                1ull << SDL_SCANCODE_A |
+                                1ull << SDL_SCANCODE_S |
+                                1ull << SDL_SCANCODE_D |
+                                1ull << SDL_SCANCODE_F |
+                                1ull << SDL_SCANCODE_Z |
+                                1ull << SDL_SCANCODE_X |
+                                1ull << SDL_SCANCODE_C |
+                                1ull << SDL_SCANCODE_V;
+uint64_t g_InputBitMap = 0;
+uint8_t g_LastInput = 0;
+
+#define GET_ANY_INPUT_DOWN (g_InputBitMap & g_InputBitMask)
+#define GET_INPUT(code) ((g_InputBitMap >> code) & 1ull)
+#define GET_INPUT_FROM_HEX(input) (GET_INPUT(g_InputHexTable[input - 1]))
 // (!!isDown) is a trick to ensure this value is 0 or 1 and nothing else
-#define SET_INPUT(code, isDown) g_InputBits = (g_InputBits & ~(1ull << code)) | ((uint64_t)(!!isDown) << code);
+#define SET_INPUT(code, isDown) g_InputBitMap = (g_InputBitMap & ~(1ull << code)) | ((uint64_t)(!!isDown) << code);
 #define IS_VALID_INPUT(code) (g_InputBitMask & (1ull << code))
 
 // Program Functions
@@ -135,18 +193,29 @@ void CHIPPY_InitVariableRegister()
     }
 }
 
+inline uint32_t CHIPPY_SDLColor_To_Uint32(SDL_Color* color)
+{
+    return (uint32_t)color->r << 24 | (uint32_t)color->g << 16 | (uint32_t)color->b << 8 | (uint32_t)color->a;
+}
+
 void CHIPPY_ClearDisplayBuffer()
 {
+    const uint32_t clearColor = CHIPPY_SDLColor_To_Uint32(&g_DisplayColors[0]);
     for (int i = 0; i < CHIPPY_DISPLAY_HEIGHT; ++i)
     {
         for (int j = 0; j < CHIPPY_DISPLAY_WIDTH; ++j)
-        g_DisplayBuffer[i][j] = 0;
+        g_DisplayBuffer[i][j] = clearColor;
     }
 }
 
-void CHIPPY_SetColorAt(uint32_t* idx, SDL_Color* color)
+inline uint8_t CHIPPY_CheckColorPresent(uint32_t* pixel)
 {
-    *idx = (uint32_t)color->r << 24 | (uint32_t)color->g << 16 | (uint32_t)color->b << 8 | 0xFF;
+    return (uint8_t)(*pixel ^ CHIPPY_SDLColor_To_Uint32(&g_DisplayColors[1]));
+}
+
+inline void CHIPPY_SetColorAt(uint32_t* idx, SDL_Color* color)
+{
+    *idx = CHIPPY_SDLColor_To_Uint32(color);
 }
 
 int CHIPPY_LoadRom()
@@ -188,6 +257,9 @@ int CHIPPY_LoadRom()
     }
 
     fclose(rom);
+
+    memcpy(&g_RomMemory[g_FontStartAddress], &g_Font, sizeof(g_Font));
+    return 0;
 };
 
 /** Emulator Functions **/
@@ -195,134 +267,350 @@ uint16_t CHIPPY_Fetch()
 {
     // Read instruction PC is pointing at from mem - two bytes combined into a 16 bit instruction
     // Increment the PC as we access the bytes, shuffle the PC to the next instruction for next fetch
-    return (((uint16_t)g_RomMemory[g_ProgramCounter++] << 8) ^ ((uint16_t)g_RomMemory[g_ProgramCounter++]));
+    uint16_t instruction = ((uint16_t)(g_RomMemory[g_ProgramCounter]) << 8) ^ (uint16_t)(g_RomMemory[g_ProgramCounter + 1]);
+    g_ProgramCounter += 2;
+    return instruction;
 };
 
-// split input into two parts:
-// first half_byte = instruction & the rest = data
-
-// if else or switch for triggering instructions? na that's gross
-// functions pointers + map/indexing instant access
-
-/*
-X: The second nibble. Used to look up one of the 16 registers (VX) from V0 through VF. (always used to look up the values in registers)
-Y: The third nibble. Also used to look up one of the 16 registers (VY) from V0 through VF. (always used to look up the values in registers)
-N: The fourth nibble. A 4-bit number.
-NN: The second byte (third and fourth nibbles). An 8-bit immediate number.
-NNN: The second, third and fourth nibbles. A 12-bit immediate memory address.
-
-00E0 (clear screen)
-00EE (Subroutine at NNN - pop NNN from stack, set PC to NNN)
-0NNN (machine language routine - SKIP)
-
-1NNN (jump - set PC to NNN)
-
-2NNN (Subroutine at NNN - push NNN to stack, set PC to NNN)
-
-3XNN (PC += 2 if (VX == NN))
-4XNN (PC += 2 if (VX != NN))
-5XY0 (PC += 2 if (VX == VY))
-6XNN (set register VX to NN)
-7XNN (add value to register VX)
-9XY0 (PC += 2 if (VX != VY))
-ANNN (set index register I)
-DXYN (display/draw)
-
-3XNN
-4XNN
-5XY0
-9XY0
-
-BNNN
-CXNN
-
-8XY0
-8XY1
-8XY2
-8XY3
-8XY4
-8XY5
-8XY7
-8XY6
-8XYE
-
-EX9E
-EXA1
-
-FX07
-FX15
-FX18
-
-FX1E
-FX0A
-FX29
-FX33
-
-FX55
-FX65
-*/
-void CHIPPY_OpClearScreen()
+inline void CHIPPY_Op_ClearScreen()
 {
     CHIPPY_ClearDisplayBuffer();
 };
 
-void CHIPPY_OpPushSubroutine(uint16_t instruction)
+void CHIPPY_Op_PushSubroutine(uint16_t instruction)
 {
     Cstack_Push(g_AddressStack, g_ProgramCounter);
     g_ProgramCounter = NNN(instruction);
 }
 
-void CHIPPY_OpPopSubroutine()
+inline void CHIPPY_Op_PopSubroutine()
 {
     g_ProgramCounter = Cstack_Pop(g_AddressStack);
 };
 
-void CHIPPY_LookUp0(uint16_t instruction)
+void CHIPPY_LookUp_Op0(uint16_t instruction)
 {
+    // 0--- Op Codes don't require masking
     switch (instruction)
     {
     case 0x00E0:
-        CHIPPY_OpClearScreen();
+        CHIPPY_Op_ClearScreen();
         break;
     case 0x00EE:
-        CHIPPY_OpPopSubroutine();
+        CHIPPY_Op_PopSubroutine();
+        break;
+    default: // 0NNN (machine language routine - SKIP)
+        break;
+    }
+};
+
+inline void CHIPPY_OpSet_VXVY(uint16_t instruction)
+{
+    g_VariableRegisters[X(instruction)] = g_VariableRegisters[Y(instruction)];
+};
+
+inline void CHIPPY_OpBitwiseOr_VXVY(uint16_t instruction)
+{
+    g_VariableRegisters[X(instruction)] |= g_VariableRegisters[Y(instruction)];
+};
+
+inline void CHIPPY_OpBitwiseAnd_VXVY(uint16_t instruction)
+{
+    g_VariableRegisters[X(instruction)] &= g_VariableRegisters[Y(instruction)];
+};
+
+inline void CHIPPY_OpBitwiseXOR_VXVY(uint16_t instruction)
+{
+    g_VariableRegisters[X(instruction)] &= g_VariableRegisters[Y(instruction)];
+};
+
+void CHIPPY_OpCarryAdd_VXVY(uint16_t instruction)
+{
+    const uint8_t xIdx = X(instruction);
+    const uint16_t result = g_VariableRegisters[xIdx] + g_VariableRegisters[Y(instruction)];
+    // If the result overflows, set the carry flag in VF to 1, else set 0
+    g_VariableRegisters[0xF] = (uint8_t)(result > 0xFF);
+    g_VariableRegisters[xIdx] = (uint8_t)result;
+};
+
+void CHIPPY_OpSubtract_VXVY(uint16_t instruction)
+{
+    const uint8_t xIdx = X(instruction);
+    const uint8_t x = g_VariableRegisters[xIdx];
+    const uint8_t y = g_VariableRegisters[Y(instruction)];
+    const uint16_t result = x - y;
+    // If a > b, set the carry flag in VF to 1, else set 0
+    g_VariableRegisters[0xF] = (uint8_t)(x > y);
+    g_VariableRegisters[xIdx] = (uint8_t)result;
+};
+
+void CHIPPY_OpSubtract_VYVX(uint16_t instruction)
+{
+    const uint8_t xIdx = X(instruction);
+    const uint8_t x = g_VariableRegisters[xIdx];
+    const uint8_t y = g_VariableRegisters[Y(instruction)];
+    const uint16_t result = y - x;
+    // If a > b, set the carry flag in VF to 1, else set 0
+    g_VariableRegisters[0xF] = (uint8_t)(y > x);
+    g_VariableRegisters[xIdx] = (uint8_t)result;
+};
+
+void CHIPPY_OpShiftRight_VYVX(uint16_t instruction)
+{
+    const uint8_t xIdx = X(instruction);
+    g_VariableRegisters[xIdx] = g_VariableRegisters[Y(instruction)];
+    
+    const uint8_t vx = g_VariableRegisters[xIdx];
+    // Set carry flag in VF to match LSB
+    g_VariableRegisters[0xF] = vx & 1;
+    g_VariableRegisters[xIdx] >>= 1;
+};
+
+void CHIPPY_OpShiftLeft_VYVX(uint16_t instruction)
+{
+    const uint8_t xIdx = X(instruction);
+    g_VariableRegisters[xIdx] = g_VariableRegisters[Y(instruction)];
+
+    const uint8_t vx = g_VariableRegisters[xIdx];
+    // Set carry flag in VF to match LSB
+    g_VariableRegisters[0xF] = vx & 1;
+    g_VariableRegisters[xIdx] <<= 1;
+};
+
+void CHIPPY_LookUp_Op8(uint16_t instruction)
+{
+    const uint16_t opCode = instruction & 0xF00F;
+
+    switch (opCode)
+    {
+    case 0x8000:
+        CHIPPY_OpSet_VXVY(instruction);
+        break;
+    case 0x8001:
+        CHIPPY_OpBitwiseOr_VXVY(instruction);
+        break;
+    case 0x8002:
+        CHIPPY_OpBitwiseAnd_VXVY(instruction);
+        break;
+    case 0x8003:
+        CHIPPY_OpBitwiseXOR_VXVY(instruction);
+        break;
+    case 0x8004:
+        CHIPPY_OpCarryAdd_VXVY(instruction);
+        break;
+    case 0x8005:
+        CHIPPY_OpSubtract_VXVY(instruction);
+        break;
+    case 0x8007:
+        CHIPPY_OpSubtract_VYVX(instruction);
+        break;
+    case 0x8006:
+        CHIPPY_OpShiftRight_VYVX(instruction);
+        break;
+    case 0x800E:
+        CHIPPY_OpShiftLeft_VYVX(instruction);
         break;
     default:
         break;
     }
 };
 
-void CHIPPY_OpJumpPC(uint16_t instruction)
+inline void CHIPPY_OpSkip_KeyVXDown(uint16_t instruction)
+{
+    g_ProgramCounter += 2 * GET_INPUT_FROM_HEX(g_VariableRegisters[X(instruction)]);
+};
+
+inline void CHIPPY_OpSkip_KeyVXUp(uint16_t instruction)
+{
+    g_ProgramCounter += 2 * !GET_INPUT_FROM_HEX(g_VariableRegisters[X(instruction)]);
+};
+
+void CHIPPY_LookUp_OpE(uint16_t instruction)
+{
+    const uint16_t opCode = instruction & 0xF0FF;
+
+    switch (opCode)
+    {
+    case 0xE09E:
+        CHIPPY_OpSkip_KeyVXDown(instruction);
+        break;
+    case 0xE0A1:
+        CHIPPY_OpSkip_KeyVXUp(instruction);
+        break;
+    default:
+        break;
+    }
+};
+
+inline void CHIPPY_OpTimer_CacheDelayVX(uint16_t instruction)
+{
+    g_VariableRegisters[X(instruction)] = g_DelayTimer;
+};
+
+inline void CHIPPY_OpTimer_SetDelayVX(uint16_t instruction)
+{
+    g_DelayTimer = g_VariableRegisters[X(instruction)];
+};
+
+inline void CHIPPY_OpTimer_SetSoundVX(uint16_t instruction)
+{
+    g_SoundTimer = g_VariableRegisters[X(instruction)];
+};
+
+inline void CHIPPY_OpAdd_IdxReg(uint16_t instruction)
+{
+    g_IndexRegister += g_VariableRegisters[X(instruction)];
+};
+
+void CHIPPY_OpInput_GetKey(uint16_t instruction)
+{
+    // This opcode blocks until a key is pressed, but as we already incremented the program counter in the Fetch step-
+    // we decrement it here first to cause a loop
+    g_ProgramCounter -= 2;
+
+    if (GET_ANY_INPUT_DOWN)
+    {
+        g_ProgramCounter += 2;
+        g_VariableRegisters[X(instruction)] = g_InputScanTable[g_LastInput];
+    }
+};
+
+void CHIPPY_OpFont_SetCharacter(uint16_t instruction)
+{
+    const uint8_t fontIndex = g_VariableRegisters[X(instruction)] * g_FontHeight;
+    g_IndexRegister = g_RomMemory[g_FontStartAddress + fontIndex];
+};
+
+void CHIPPY_OpFont_VXToDecimal(uint16_t instruction)
+{
+    // Takes the number in vx and converts it to three decimal digits and stores them in the index register memory
+    uint8_t input = g_VariableRegisters[X(instruction)];
+    uint8_t memoryIdx = g_IndexRegister;
+
+    while (input > 0)
+    {
+        g_RomMemory[memoryIdx] = input % 10;
+
+        ++memoryIdx;
+        input *= 0.1;
+    }
+};
+
+void CHIPPY_OpMemory_Store(uint16_t instruction)
+{
+    for (int i = 0; i <= X(instruction); ++i)
+    {
+        g_RomMemory[g_IndexRegister + i] = g_VariableRegisters[i];
+    }
+};
+
+void CHIPPY_OpMemory_Load(uint16_t instruction)
+{
+    for (int i = 0; i <= X(instruction); ++i)
+    {
+        g_VariableRegisters[i] = g_RomMemory[g_IndexRegister + i];
+    }
+};
+
+void CHIPPY_LookUp_OpF(uint16_t instruction)
+{
+    const uint16_t opCode = instruction & 0xF0FF;
+
+    switch (opCode)
+    {
+    case 0xF007:
+        CHIPPY_OpTimer_CacheDelayVX(instruction);
+        break;
+    case 0xF015:
+        CHIPPY_OpTimer_SetDelayVX(instruction);
+        break;
+    case 0xF018:
+        CHIPPY_OpTimer_SetDelayVX(instruction);
+        break;
+    case 0xF01E:
+        CHIPPY_OpAdd_IdxReg(instruction);
+        break;
+    case 0xF00A:
+        CHIPPY_OpInput_GetKey(instruction);
+        break;
+    case 0xF029:
+        CHIPPY_OpFont_SetCharacter(instruction);
+        break;
+    case 0xF033:
+        CHIPPY_OpFont_VXToDecimal(instruction);
+        break;
+    case 0xF055:
+        CHIPPY_OpMemory_Store(instruction);
+        break;
+    case 0xF065:
+        CHIPPY_OpMemory_Load(instruction);
+        break;
+    default:
+        break;
+    }
+};
+
+inline void CHIPPY_OpJump_PC(uint16_t instruction)
 {
     g_ProgramCounter = NNN(instruction);
 };
 
-void CHIPPY_OpSetVX(uint16_t instruction)
+inline void CHIPPY_OpJump_V0PC(uint16_t instruction)
+{
+    g_ProgramCounter = NNN(instruction) + g_VariableRegisters[0];
+};
+
+inline void CHIPPY_OpIf_VXNN(uint16_t instruction)
+{
+    // if VX == NN, PC += 2
+    g_ProgramCounter += (uint8_t)(g_VariableRegisters[X(instruction)] == NN(instruction)) * 2;
+};
+
+inline void CHIPPY_OpIfNot_VXNN(uint16_t instruction)
+{
+    // if VX == NN, PC += 2
+    g_ProgramCounter += (uint8_t)(g_VariableRegisters[X(instruction)] != NN(instruction)) * 2;
+};
+
+inline void CHIPPY_OpIf_VXVY(uint16_t instruction)
+{
+    // if VX == VY, PC += 2
+    g_ProgramCounter += (uint8_t)(g_VariableRegisters[X(instruction)] == g_VariableRegisters[Y(instruction)]) * 2;
+};
+
+inline void CHIPPY_OpIfNot_VXVY(uint16_t instruction)
+{
+    // if VX != VY, PC += 2
+    g_ProgramCounter += (uint8_t)(g_VariableRegisters[X(instruction)] != g_VariableRegisters[Y(instruction)]) * 2;
+};
+
+inline void CHIPPY_OpSet_VX(uint16_t instruction)
 {
     g_VariableRegisters[X(instruction)] = NN(instruction);
 };
 
-void CHIPPY_OpVXAdd(uint16_t instruction)
+inline void CHIPPY_OpAdd_VX(uint16_t instruction)
 {
     g_VariableRegisters[X(instruction)] += NN(instruction);
 };
 
-void CHIPPY_OpSetIdxReg(uint16_t instruction)
+inline void CHIPPY_OpSet_IdxReg(uint16_t instruction)
 {
-    g_IndexReg = NNN(instruction);
+    g_IndexRegister = NNN(instruction);
 }; 
 
-void CHIPPY_OpSetPixel(uint16_t instruction)
+inline void CHIPPY_OpRand_VX(uint16_t instruction)
+{
+    g_VariableRegisters[X(instruction)] = rand() & NN(instruction);
+};
+
+void CHIPPY_Op_DrawSprite(uint16_t instruction)
 {
     const uint8_t x = g_VariableRegisters[X(instruction)] % CHIPPY_DISPLAY_WIDTH;
     const uint8_t y = g_VariableRegisters[Y(instruction)] % CHIPPY_DISPLAY_HEIGHT;
     uint8_t numPixelsH = N(instruction);
     
-    /* prevent writing outside of the buffer
-    x = 28, numpixel = 8, height = 32
-    3 in range 5 out of range
-    numpixel = numpixel - (height - 1 % numpixel + y)
-    */
+    // Prevent drawing out of buffer range
     numPixelsH = y + numPixelsH > CHIPPY_DISPLAY_HEIGHT - 1 ?
                 CHIPPY_DISPLAY_HEIGHT - y - 1 : numPixelsH;
     uint8_t numPixelsW = x + 8 > CHIPPY_DISPLAY_WIDTH - 1 ?
@@ -332,55 +620,52 @@ void CHIPPY_OpSetPixel(uint16_t instruction)
     {
         for (uint8_t col = 0; col < numPixelsW; ++col)
         {
-            // get pixel from msb -> lsb
-            const uint8_t spritePixel = !!g_RomMemory[g_IndexReg + row] & (0b10000000 >> col);
+            // get pixel from msb -> lsb 
+            const uint8_t spritePixelOn = !!(g_RomMemory[g_IndexRegister + row] & (0x80 >> col));     
             // get pixel to draw to from color buffer
-            const uint32_t* bufferPixel = g_DisplayBuffer[y + row][x + col];
-            
-            // if 0 = 0x00, if 1 = 0xFF
-            const uint32_t drawMask = -spritePixel;
-            // if sprite and pixel are on, negated 
-            const uint8_t bPixelNegation = (uint8_t)(drawMask & !!*bufferPixel);
-            g_VariableRegisters[15] |= bPixelNegation;
+            uint32_t* bufferPixelPtr = &g_DisplayBuffer[y + row][x + col];
+            const uint8_t bufferPixelOn = CHIPPY_CheckColorPresent(bufferPixelPtr);
 
-            const SDL_Color* color = &g_DisplayColors[spritePixel ^ !!*bufferPixel];
-            CHIPPY_SetColorAt(bufferPixel, color);
+            // if sprite and pixel are on, negated 
+            const uint8_t bPixelNegation = (uint8_t)(spritePixelOn & bufferPixelOn);
+            
+            g_VariableRegisters[0xF] = bPixelNegation;
+
+            CHIPPY_SetColorAt(bufferPixelPtr, &g_DisplayColors[bufferPixelOn ^ spritePixelOn]);
         }
     }
 }; 
 
+/*
+X: The second nibble. Used to look up one of the 16 registers (VX) from V0 through VF. (always used to look up the values in registers)
+Y: The third nibble. Also used to look up one of the 16 registers (VY) from V0 through VF. (always used to look up the values in registers)
+N: The fourth nibble. A 4-bit number.
+NN: The second byte (third and fourth nibbles). An 8-bit immediate number.
+NNN: The second, third and fourth nibbles. A 12-bit immediate memory address.*/
 CHIPPY_FPtr g_OperationMap[16] =
 {
-    CHIPPY_LookUp0, // 0XXX Search
-    CHIPPY_OpJumpPC, // 1XXX Jump
-    CHIPPY_OpPushSubroutine, // 2XXX Subroutine
-    NULL, // 3XXX
-    NULL, // 4XXX
-    NULL, // 5XXX
-    CHIPPY_OpSetVX, // 6XXX Set VX to NN
-    CHIPPY_OpVXAdd, // 7XXX Add NN to VX
-    NULL, // 8XXX
-    NULL, // 9XXX
-    CHIPPY_OpSetIdxReg, // AXXX Set Index Reg I to NNN
-    NULL, // BXXX
-    NULL, // CXXX
-    CHIPPY_OpSetPixel, // DXXX Set Pixel XY to N
-    NULL, // EXXX
-    NULL  // FXXX
+    CHIPPY_LookUp_Op0, // 0--- Multiple Instructions
+    CHIPPY_OpJump_PC, // 1--- Jump PC to NNN
+    CHIPPY_Op_PushSubroutine, // 2--- Subroutine
+    CHIPPY_OpIf_VXNN, // 3--- if (vx == nn) skip
+    CHIPPY_OpIfNot_VXNN, // 4--- if (vx != nn) skip
+    CHIPPY_OpIf_VXVY, // 5--- if (vx == vy) skip
+    CHIPPY_OpSet_VX, // 6--- Set VX to NN
+    CHIPPY_OpAdd_VX, // 7--- Add NN to VX
+    CHIPPY_LookUp_Op8, // 8--- Multiple Instructions
+    CHIPPY_OpIfNot_VXVY, // 9--- if (vx != vy) skip
+    CHIPPY_OpSet_IdxReg, // A--- Set Index Reg I to NNN
+    CHIPPY_OpJump_V0PC, // B--- Jump PC to NNN + V0
+    CHIPPY_OpRand_VX, // C--- Generate Random int into VX
+    CHIPPY_Op_DrawSprite, // D--- Draw sprite at (VX, VY) by N*8
+    CHIPPY_LookUp_OpE, // E--- Multiple Instructions
+    CHIPPY_LookUp_OpF  // F--- Multiple Instructions
 };
 
 
-void CHIPPY_Execute(uint16_t op, uint16_t instruction)
+inline void CHIPPY_Execute(uint16_t instruction)
 {
-    if (op < 16)
-    {
-        (*g_OperationMap[op])(instruction);
-    }
-    else
-    {
-        perror("Op code out of range");
-        return;
-    }
+    (*g_OperationMap[OP(instruction)])(instruction);
 };
 
 void CHIPPY_Update()
@@ -403,8 +688,7 @@ void CHIPPY_Update()
     for (int i = 0; i < cyclesToRun; ++i)
     {
         const uint16_t instruction = CHIPPY_Fetch();
-        const uint16_t opcode = (instruction >> 12);
-        CHIPPY_Execute(opcode, instruction);
+        CHIPPY_Execute(instruction);
     }
 
     // Only subtract time used, to ensure no lost time between updates.
@@ -415,7 +699,7 @@ void CHIPPY_Update()
 SDL_AppResult SDL_AppInit(void** appstate, int argc, char* argv[])
 {
     g_CurrentTime = SDL_GetTicks();
-
+    srand(time(NULL));
 
     /* Create the window */
     if (!SDL_CreateWindowAndRenderer("CHIPPY-08", 800, 600, SDL_WINDOW_MOUSE_FOCUS | SDL_WINDOW_MAXIMIZED, &g_Window, &g_Renderer)) {
@@ -451,6 +735,7 @@ SDL_AppResult handle_key_event_(SDL_Scancode key_code, int IsDown)
     // Game Input
     if (IS_VALID_INPUT(key_code))
     {
+        g_LastInput = IsDown ? key_code : 0;
         SET_INPUT(key_code, IsDown);
     }
 
@@ -473,7 +758,7 @@ SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 
 void CHIPPY_WelcomeMsg()
 {
-    const char* message = "CHIPPY-08";
+    const char* message = CHIPPY_WELCOME_MSG;
     int w = 0, h = 0;
     float x, y;
     const float scale = 4.0f;
@@ -515,7 +800,6 @@ SDL_AppResult SDL_AppIterate(void *appstate)
     {
         CHIPPY_Update();
 
-        // Draw
         SDL_UpdateTexture(g_DisplayTexture, NULL, &g_DisplayBuffer, sizeof(g_DisplayBuffer[0][0]) * CHIPPY_DISPLAY_WIDTH);
         
         SDL_SetRenderDrawColor(g_Renderer, g_DisplayColors[0].r, g_DisplayColors[0].g, g_DisplayColors[0].b, g_DisplayColors[0].a);
@@ -526,8 +810,6 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 
         SDL_RenderPresent(g_Renderer);
     }
-
-
     return SDL_APP_CONTINUE;
 }
 

@@ -21,9 +21,15 @@
     <ClCompile Include="cstack.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Chippy.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cstack.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Chippy.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

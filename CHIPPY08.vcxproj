@@ -127,6 +127,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Chippy.c" />
     <ClCompile Include="cstack.c" />
     <ClCompile Include="main.c" />
   </ItemGroup>
@@ -136,6 +137,7 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Chippy.h" />
     <ClInclude Include="cstack.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

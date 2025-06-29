@@ -47,6 +47,7 @@ uint16_t Cstack_Pop(Cstack* stack)
     stack->top = stack->top->next;
     free(n);
     stack->count--;
+    return val;
 }
 
 uint16_t Cstack_Peek(Cstack* stack)
