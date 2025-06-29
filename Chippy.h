@@ -6,7 +6,7 @@
 
 #define CHIPPY_WINDOW_NAME "CHIPPY-08, A CHIP8 Emulator"
 #define CHIPPY_WELCOME_MSG "CHIPPY-08"
-#define CHIPPY_WINDOW_WIDTH 600
+#define CHIPPY_WINDOW_WIDTH 1200
 #define CHIPPY_WINDOW_HEIGHT 600
 
 // Tests primarily taken from
