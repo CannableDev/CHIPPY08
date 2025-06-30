@@ -585,22 +585,22 @@ NN: The second byte (third and fourth nibbles). An 8-bit immediate number.
 NNN: The second, third and fourth nibbles. A 12-bit immediate memory address.*/
 CHIPPY_FPtr g_OperationMap[16] =
 {
-    CHIPPY_LookUp_Op0, // 0--- Multiple Instructions
-    CHIPPY_OpJump_PC, // 1--- Jump PC to NNN
-    CHIPPY_Op_PushSubroutine, // 2--- Subroutine
-    CHIPPY_OpIf_VXNN, // 3--- if (vx == nn) skip
-    CHIPPY_OpIfNot_VXNN, // 4--- if (vx != nn) skip
-    CHIPPY_OpIf_VXVY, // 5--- if (vx == vy) skip
-    CHIPPY_OpSet_VX, // 6--- Set VX to NN
-    CHIPPY_OpAdd_VX, // 7--- Add NN to VX
-    CHIPPY_LookUp_Op8, // 8--- Multiple Instructions
-    CHIPPY_OpIfNot_VXVY, // 9--- if (vx != vy) skip
-    CHIPPY_OpSet_IdxReg, // A--- Set Index Reg I to NNN
-    CHIPPY_OpJump_V0PC, // B--- Jump PC to NNN + V0
-    CHIPPY_OpRand_VX, // C--- Generate Random int into VX
-    CHIPPY_Op_DrawSprite, // D--- Draw sprite at (VX, VY) by N*8
-    CHIPPY_LookUp_OpE, // E--- Multiple Instructions
-    CHIPPY_LookUp_OpF  // F--- Multiple Instructions
+    CHIPPY_LookUp_Op0,          // 0--- Multiple Instructions
+    CHIPPY_OpJump_PC,           // 1--- Jump PC to NNN
+    CHIPPY_Op_PushSubroutine,   // 2--- Subroutine
+    CHIPPY_OpIf_VXNN,           // 3--- if (vx == nn) skip
+    CHIPPY_OpIfNot_VXNN,        // 4--- if (vx != nn) skip
+    CHIPPY_OpIf_VXVY,           // 5--- if (vx == vy) skip
+    CHIPPY_OpSet_VX,            // 6--- Set VX to NN
+    CHIPPY_OpAdd_VX,            // 7--- Add NN to VX
+    CHIPPY_LookUp_Op8,          // 8--- Multiple Instructions
+    CHIPPY_OpIfNot_VXVY,        // 9--- if (vx != vy) skip
+    CHIPPY_OpSet_IdxReg,        // A--- Set Index Reg I to NNN
+    CHIPPY_OpJump_V0PC,         // B--- Jump PC to NNN + V0
+    CHIPPY_OpRand_VX,           // C--- Generate Random int into VX
+    CHIPPY_Op_DrawSprite,       // D--- Draw sprite at (VX, VY) by N*8
+    CHIPPY_LookUp_OpE,          // E--- Multiple Instructions
+    CHIPPY_LookUp_OpF           // F--- Multiple Instructions
 };
 
 
